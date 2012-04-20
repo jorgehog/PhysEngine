@@ -116,7 +116,6 @@ class Engine:
         g = self.parameters['g'];
 
         self.t = 0;
-        vmax = 0;
         while self.t < T:
             new_objects=[]
             for cobject in self.world.objects:
@@ -124,29 +123,48 @@ class Engine:
                     new_objects.append(cobject)
                     if cobject.sticky is False:
                         COM = cobject.COM;
-                     
+                        
                         a_vec = array([0,-g])
                         cobject.v = cobject.v + a_vec*dt;
+                        v = cobject.get_v();
                         cobject.COMprev = COM.copy()
-                        cobject.set_COM(COM + dt*cobject.v)
+                        cobject.set_COM(COM + dt*cobject.v*(v > 0.1))
                         
-                        NoContact, target = cobject.check_blocked(self.world, ret_info = True)
-                        if not NoContact:
-                            v = cobject.get_v();
-                            if v > vmax:
-                                vmax = v;
+                        NoContact, target, impact = cobject.check_blocked(self.world, ret_info = True)
+
+##                        if target != 0:
+##                            if target.sticky ==False and target.ID in [a[0] for a in cobject.recent_collisions]:
+##                                print target.ID, "   -    ", cobject.ID
+##                                NoContact = True;
                             
+                        if not NoContact:
+                    
                             cobject.set_COM(0.5*(cobject.COM + cobject.COMprev))
-                            target_angle = target.get_angle()
+                            
+                            target_angle = target.map_angle(impact)
+                            target_angle += target.get_angle()
+                            print "DETECTED: ", cobject.name(), "colliding with ", target.name(), " at an angle of ", target_angle*180/pi, " degrees."
                             projectile_angle = cobject.get_direction()
                             incl = projectile_angle - target_angle;
-                            
-                            avg_elasticity = (0.2*target.elasticity+0.8*cobject.elasticity)
-                            cobject.v = avg_elasticity*array([v*cos(incl - target_angle), -v*sin(incl - target_angle)])
+
+                            avg_elasticity = (0.3*target.elasticity+0.7*cobject.elasticity)
+                            cobject.v = sign(cobject.v[0])*avg_elasticity*array([v*cos(incl - target_angle), -v*sin(incl - target_angle)])
+
+                            if target.sticky == False:
+                                target.v[1] += v*avg_elasticity**2*sin(incl - target_angle);
+##                                cobject.recent_collisions.append([target.ID,self.t])
+##                                target.recent_collisions.append([cobject.ID,self.t])
+        
             self.update_world(new_objects)
             self.t += dt;
-    
-        
+##            for old_object in new_objects:
+##                if old_object.sticky == False:
+##                    for i in range(len(old_object.recent_collisions)):
+##                        time, ID = old_object.recent_collisions[i]
+##                        if self.t - time > 7*dt:
+##                            old_object.recent_collisions.pop(i)
+            
+            
 
 
 class Object:
@@ -160,6 +178,8 @@ class Object:
 
     def set_COM(self, COM):
         self.COM = array(COM);
+    def set_ID(self, ID):
+        self.ID = ID;
     def get_v(self):
         return (self.v[0]**2 + self.v[1]**2)**0.5
     def get_direction(self):
@@ -189,6 +209,7 @@ class Box(Object):
         self.sticky = sticky
         self.angle = 0;
         self.elasticity = 0.3;
+        self.ID = None
 ##    def get_COM(self):
 ##        th = self.angle;
 ##        dx, dy = self.dx, self.dy
@@ -196,8 +217,62 @@ class Box(Object):
         
     def area(self):
         return self.dx*self.dy;
+    def name(self):
+        return "box"
     def get_angle(self):
         return self.angle;
+    def map_angle(self, impact):
+        x, y = impact;
+        x0, y0 = self.COM;
+        dx = float(self.dx);
+        dy = float(self.dy);
+
+        if (x0 - dx/2 + dy/2) <= x <= (x0 + dx/2 - dy/2):
+            if y > y0:
+                return 0
+            else:
+                return pi
+        else:
+            if x > x0 and y > y0:
+                xp = x - x0 - dx/2 + dy/2
+                yp = y - y0
+                if xp > yp:
+                    return pi/2
+                else:
+                    return 0
+                
+            elif x > x0 and y < y0:
+                xp = x - x0 - dx/2 + dy/2
+                yp = y - y0 + dy/2
+
+                if yp < dy/2 - xp:
+                    return pi
+                else:
+                    return pi/2;
+
+            elif x < x0 and y < y0:
+                xp = x - x0 + dx/2;
+                yp = y - y0 + dy/2;
+                if xp > yp:
+                    return pi
+                else:
+                    return -pi/2
+
+            elif x < x0 and y > y0:
+                xp = x - x0 + dx/2
+                yp = y - y0
+
+                if yp < dy/2 - xp:
+                    return -pi/2
+                else:
+                    return 0
+            else:
+                return "WEIRD"
+    
+        
+        
+                
+        
     def draw(self, res, display):
         c = self.color;
         x0, y0 = self.COM;
@@ -237,33 +312,59 @@ class Box(Object):
         dy = self.dy
 
         for x in range(COM_x - dx/2 +1, COM_x + dx/2):
-            for y in range(COM_y - dy/2 + 1, COM_y + dy/2):
-                if world.grid[x][y] != 0:
-                    print "(%d, %d)" % (x,y)
-                    print COM_y + dy/2
-                    print world.grid[x][y]
-                    if world.objects[int(world.grid[x][y])] != 0:
+            y1 = COM_y - dy/2 + 1
+            y2 = COM_y + dy/2 - 1
+            if world.grid[x][y1] != 0:
+                if world.objects[int(world.grid[x][y1])] != 0:
                         if ret_info == False:
                             print "Object path blocked"
                             return False
                         elif ret_info:
-                            return False, world.objects[int(world.grid[x][y])]
+                            return False, world.objects[int(world.grid[x][y1])], 0
+            elif world.grid[x][y2] != 0:
+                if world.objects[int(world.grid[x][y2])] != 0:
+                    if ret_info == False:
+                            print "Object path blocked"
+                            return False
+                    elif ret_info:
+                            return False, world.objects[int(world.grid[x][y2])], pi
+            
+                
+        for y in range(COM_y - dy/2 + 1, COM_y + dy/2):
+            x1 = COM_x - dx/2 + 1
+            x2 = COM_x + dx/2 - 1
+            if world.grid[x1][y] != 0:
+                if world.objects[int(world.grid[x1][y])] != 0:
+                    if ret_info == False:
+                        print "Object path blocked"
+                        return False
+                    elif ret_info:
+                        return False, world.objects[int(world.grid[x1][y])], -pi/4
+            elif world.grid[x2][y] != 0:
+                if world.objects[int(world.grid[x2][y])] != 0:
+                    if ret_info == False:
+                        print "Object path blocked"
+                        return False
+                    elif ret_info:
+                        return False, world.objects[int(world.grid[x2][y])], pi/4
 
         if ret_info == False:
             return True
         else:
-            return True, 0
+            return True, 0, 0
     def scale_parameters(self, res):
         for i in [0,1]:
             self.COM[i]*=res[i];
+
         self.dx*=res[0];
         self.dy*=res[1];
         
     def mark_grid(self, world):
         x0, y0 = self.COM
         dx, dy = self.dx, self.dy;
-        
-        world.grid[(x0-dx/2):(x0 + dx/2), (y0-dy/2):(y0 + dy/2)] = len(world.objects)-1;
+        self.ID = len(world.objects)
+
+        world.grid[(x0-dx/2):(x0 + dx/2), (y0-dy/2):(y0 + dy/2)] = self.ID;
 
 
 
@@ -273,21 +374,28 @@ class Circle(Object):
         self.r = r;
         Object.__init__(self, v0=v0)
         self.sticky = sticky;
-        self.elasticity = 0.9;
+        self.elasticity = 0.99;
+        self.ID = None
+        self.recent_collisions = []
 
     def area(self):
-        return pi*self.r**2    
+        return pi*self.r**2
+    def name(self):
+        return "circle"
+    def map_angle(self, impact):
+        return 0;
 
     def mark_grid(self,world):
         x0, y0 = self.COM
         r = self.r
+        self.ID = len(world.objects);
 
         for theta in linspace(0,2*pi):
             for ri in linspace(0,r):
                 x = x0 + round(ri*cos(theta))
                 y = y0 + round(ri*sin(theta))
-
-                world.grid[x,y] = len(world.objects)-1;
+                
+                world.grid[x,y] = self.ID;
 
         
         
@@ -295,30 +403,30 @@ class Circle(Object):
         COM_x, COM_y = self.COM
         r = self.r
 
-        for theta in linspace(0,2*pi,100):
-##            x = COM_x + round((self.res[0]*r-1)*cos(theta))
-##            y = COM_y + round((self.res[1]*r-1)*sin(theta))
+        for theta in linspace(0,2*pi):
             x = COM_x + round((self.res[0]*r)*cos(theta))
             y = COM_y + round((self.res[1]*r)*sin(theta))
-            if world.objects[int(world.grid[x][y])] != 0:
+            ID = int(world.grid[x][y])
+            if ID != self.ID and ID != 0:
                 if ret_info == False:
                     print "Object path blocked"
                     return False
                 elif ret_info:
-                    return False, world.objects[int(world.grid[x][y])]
+                    #print int(world.grid[x][y]), world.objects[int(world.grid[x][y])]
+                    return False, world.objects[ID], [x,y]
 
         if ret_info == False:
             return True
         else:
-            return True, 0
+            return True, 0, 0
 
     def check_grid_space(self, world):
         COM_x, COM_y = self.COM
         r = self.r
 
         for theta in linspace(0,2*pi,100):
-            x = COM_x + int((self.res[0]*r-1)*cos(theta))
-            y = COM_y + int((self.res[1]*r-1)*sin(theta))
+            x = COM_x + int((self.res[0]*r)*cos(theta))
+            y = COM_y + int((self.res[1]*r)*sin(theta))
             if x < 0 or x > world.n:
                 print "Object placement failed. Outside grid."
                 return False
@@ -331,7 +439,7 @@ class Circle(Object):
     def scale_parameters(self, res):
         for i in [0,1]:
             self.COM[i]*=res[i];
-
+            self.v[i] *= res[i];
         self.res = res;
 
     def draw(self, res, display):
@@ -348,26 +456,44 @@ class Circle(Object):
 
         
 def main():
-    physics = Engine(grid_resolution=[10,10])
+    physics = Engine(grid_resolution=[15,15])
 
-    object0 = Circle(1, sticky=False, v0=[8,1])
+    object0 = Circle(0.1, sticky=False, v0=[0.5,0])
     object0.set_COM([3,5])
     
     object1 = Box(3,1)
     object1.set_COM([3,3])
     
-    object2 = Box(3,1)
-    object2.set_COM([5,1])
+    object2 = Box(1,4)
+    object2.set_COM([6,5])
 
-    object3 = Box(2,1)
-    object3.set_COM([8,4])
+    object3 = Box(7,1)
+    object3.set_COM([4,1])
 
-    objects = [eval("object%d" % k) for k in range(3)]
+    object4 = Circle(0.1, sticky=False, v0 = [0.5,1])
+    object4.set_COM([2,4])
+
+    object5 = Circle(0.1, sticky=False, v0 = [1,0])
+    object5.set_COM([1,4])
+
+    object6 = Circle(0.25, sticky=False, v0 = [-3,-3])
+    object6.set_COM([8,8])
+
+    object7 = Box(1,4)
+    object7.set_COM([8,4])
+
+    object8 = Box(1,1)
+    object8.set_COM([1,2])
+
+    object9 = Box(1,1)
+    object9.set_COM([7,2])
+
+    objects = [eval("object%d" % k) for k in range(10)]
 
     world_dim = [10,10]
 
     physics.initialize_world(objects,world_dim)
-    physics.start(dt = 0.2)
+    physics.start(dt = 0.07, T = 8)
 
     
 
